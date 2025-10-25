@@ -4,6 +4,7 @@ import networkx as nx
 from config import config
 from src.visualization.plots import plot_dist
 from src.data_collection.classes import GeneNode
+import pandas as pd
 
 def build_graph_from_api(seed_gene_list: list[str], graph_name: str):
     """Build a gene interaction graph from an external API and save it as a GraphML file.
@@ -46,7 +47,7 @@ def build_graph_from_api(seed_gene_list: list[str], graph_name: str):
 
 def get_gene_graph(gene_list: list[dict], graph_name: str) -> nx.Graph:
 
-    """Load a graph from a GraphML file.
+    """Load a graph from a GraphML file if exists, otherwise build the graph integrating first and second level neighbors of gene_list using STRING api calls.
     
     Args:
         gene_list (list[dict]): List of gene dictionaries to build the graph if not found.
@@ -66,6 +67,44 @@ def get_gene_graph(gene_list: list[dict], graph_name: str) -> nx.Graph:
 
     print(f"Loaded graph '{graph_name}': {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
     return graph
+
+
+
+def get_connected_seed_genes_graph(seed_genes: pd.DataFrame, graph_name: str) -> nx.Graph:
+
+    graph_path = config.GRAPHS_DIR / f"{graph_name}.graphml"
+    if graph_path.exists():
+        graph = nx.read_graphml(graph_path)
+        convert_edge_weights_to_float(graph)
+        print(f"Loaded graph '{graph_name}': {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
+        return graph
+
+    graph = nx.Graph()
+
+    for seed_gene in seed_genes.to_dict(orient="records"):
+        print(f"Processing seed gene: {seed_gene['name']}")
+        seed_node = GeneNode.from_dict(seed_gene)
+        
+        # Add seed node with attributes unpacked
+        graph.add_node(seed_node.name, **seed_node.to_dict()) # I always want to add the seed node since it has differential expression info.
+        print("added seed node", seed_node.name, seed_node.fold_change, seed_node.p_value, seed_node.padj)
+
+        first_degree_neighbors = stringdb_api.get_string_interaction_partners(seed_node.name)
+
+        for first_neighbor in first_degree_neighbors:
+            first_neighbor_node = GeneNode.from_dict(first_neighbor)
+
+            if first_neighbor in seed_genes["name"].values:
+
+                if not graph.has_node(first_neighbor_node.name): # Avoid duplicating nodes, we might overwrite some seed node otherwise.
+                    graph.add_node(first_neighbor_node.name, **first_neighbor_node.to_dict())
+
+                graph.add_edge(seed_node.name, first_neighbor_node.name, weight=float(first_neighbor_node.combined_score))
+
+    print(f"Gene graph: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
+    nx.write_graphml(graph, config.GRAPHS_DIR / f"{graph_name}.graphml")
+    return graph
+
 
 
 def convert_edge_weights_to_float(graph: nx.Graph):

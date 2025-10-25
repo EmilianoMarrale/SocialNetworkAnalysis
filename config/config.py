@@ -18,7 +18,8 @@ DEG_FILE = RAW_DATA_DIR / 'DEG-TS6.xlsx' # Effects of hESC-Exo treatment on cell
 NETWORK_FILE = RAW_DATA_DIR / 'network_data.csv'
 
 RAW_BULK_RNA_SEQ_FILE = RAW_DATA_DIR / 'Bulk-RNA-seq-TS1.xlsx'
-PROCESSED_BULK_RNA_SEQ_FILE = PROCESSED_DATA_DIR / 'significant_DEGs.csv'
+aging_vs_302_PROCESSED_BULK_RNA_SEQ_FILE = PROCESSED_DATA_DIR / 'aging_vs_302_significant_DEGs.csv'
+young_vs_aging_PROCESSED_BULK_RNA_SEQ_FILE = PROCESSED_DATA_DIR / 'young_vs_Aging_significant_DEGs.csv'
 WHOLE_DOWNREGULATED_GRAPH_FILE_NAME = GRAPHS_DIR / 'downregulated_graph'
 WHOLE_UPREGULATED_GRAPH_FILE_NAME = GRAPHS_DIR / 'upregulated_graph'
 LIVER_DOWNREGULATED_GRAPH_FILE_NAME = GRAPHS_DIR / 'liver_downregulated_graph'

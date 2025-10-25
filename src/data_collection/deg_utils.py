@@ -2,7 +2,7 @@ from importlib.metadata import metadata
 import os
 import pandas as pd
 import numpy as np
-from config.config import DEG_FILE, RAW_BULK_RNA_SEQ_FILE, PROCESSED_BULK_RNA_SEQ_FILE
+from config.config import DEG_FILE, RAW_BULK_RNA_SEQ_FILE, aging_vs_302_PROCESSED_BULK_RNA_SEQ_FILE
 
 from pydeseq2.dds import DeseqDataSet
 from pydeseq2.default_inference import DefaultInference
@@ -17,7 +17,7 @@ from pydeseq2.ds import DeseqStats
 """
 
 
-def preprocess_bulk_rna_seq_data(padj_threshold :float, log2fc_threshold: float) -> pd.DataFrame:
+def preprocess_bulk_rna_seq_data(padj_threshold :float, log2fc_threshold: float, contrast: list[str], file: str) -> pd.DataFrame:
     """ Preprocess the RNA-seq data and return a dataframe containing the significant differentially expressed genes
 
     Args:
@@ -27,8 +27,8 @@ def preprocess_bulk_rna_seq_data(padj_threshold :float, log2fc_threshold: float)
     Returns:
         pd.DataFrame: Dataframe containing the significant differentially expressed genes
     """
-    if os.path.exists(PROCESSED_BULK_RNA_SEQ_FILE):
-        results = pd.read_csv(PROCESSED_BULK_RNA_SEQ_FILE)
+    if os.path.exists(file):
+        results = pd.read_csv(file)
         return results[(results["padj"] <= padj_threshold) & (abs(results["log2FoldChange"]) > log2fc_threshold)]
 
     df = pd.read_excel(RAW_BULK_RNA_SEQ_FILE)
@@ -62,10 +62,10 @@ def preprocess_bulk_rna_seq_data(padj_threshold :float, log2fc_threshold: float)
                     inference=inference,
                     )
     dds.deseq2()
-    ds_B_vs_A = DeseqStats(dds, contrast=["group", "302b", "Aging"], inference=inference)
+    ds_B_vs_A = DeseqStats(dds, contrast=contrast, inference=inference)
     ds_B_vs_A.summary()
     results = ds_B_vs_A.results_df
-    results.to_csv(PROCESSED_BULK_RNA_SEQ_FILE, index=True)
+    results.to_csv(file, index=True)
     # Filter as specified in the paper and return the results
     return results[(results["padj"] <= padj_threshold) & (abs(results["log2FoldChange"]) > log2fc_threshold)]
 
