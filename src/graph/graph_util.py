@@ -1,5 +1,5 @@
 import json
-from src.data_collection import stringdb_api
+from src.data_collection import stringdb_api, signor_api
 import networkx as nx
 from config import config
 from src.visualization.plots import plot_dist
@@ -43,8 +43,6 @@ def build_graph_from_api(seed_gene_list: list[str], graph_name: str):
 
     return graph
 
-
-
 def get_gene_graph(gene_list: list[dict], graph_name: str) -> nx.Graph:
 
     """Load a graph from a GraphML file if exists, otherwise build the graph integrating first and second level neighbors of gene_list using STRING api calls.
@@ -60,6 +58,103 @@ def get_gene_graph(gene_list: list[dict], graph_name: str) -> nx.Graph:
     if not graph_path.exists():
         print(f"Graph file {graph_path} does not exist.")
         return build_graph_from_api(gene_list, graph_name)
+
+    graph = nx.read_graphml(graph_path)
+
+    convert_edge_weights_to_float(graph)
+
+    print(f"Loaded graph '{graph_name}': {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
+    return graph
+
+
+
+def build_signed_directed_graph_from_signor_api(combined_graph: nx.Graph, graph_name: str) -> nx.DiGraph:
+    """Build a signed directed gene interaction graph from SIGNOR API and save it as a GraphML file.
+    Args:
+        seed_gene_list (list[dict]): List of gene dictionaries to build the graph.
+        graph_name (str): Name of the graph file (without extension).
+    Returns:
+        nx.DiGraph: The constructed signed directed gene interaction graph.
+    """
+
+    # Turn all node names to uppercase to match SIGNOR API requirements
+    mapping = {}
+    for node, data in combined_graph.nodes(data=True):
+        mapping[node] = node.upper()
+    combined_graph = nx.relabel_nodes(combined_graph, mapping)
+
+    signed_graph = nx.DiGraph()
+    queried_nodes = set()
+
+    graph_path = config.GRAPHS_DIR / f"{graph_name}.graphml"
+    if graph_path.exists():
+        signed_graph = nx.read_graphml(graph_path)
+        with open(config.GRAPHS_DIR / f"{graph_name}_queried_nodes.json", "r") as f:
+            queried_nodes = set(json.load(f))
+        print(f"Resuming from existing graph with {signed_graph.number_of_nodes()} nodes and {signed_graph.number_of_edges()} edges.")
+
+    try: 
+        for id, node in enumerate(combined_graph.nodes):
+
+            if node in queried_nodes:
+                print(f"Skipping already queried node {node} ({id+1}/{combined_graph.number_of_nodes()})")
+                continue
+
+            if id % 100 == 0:
+                nx.write_graphml(signed_graph, config.GRAPHS_DIR / f"{graph_name}.graphml")
+                with open(config.GRAPHS_DIR / f"{graph_name}_queried_nodes.json", "w") as f:
+                    json.dump(list(queried_nodes), f)
+
+            interaction_partners = signor_api.get_signor_interaction_partners(node)
+
+            print(f"Querying SIGNOR for node {node} ({id+1}/{combined_graph.number_of_nodes()})")
+            signed_graph.add_node(node, **combined_graph.nodes[node])  # Copy node attributes
+            queried_nodes.add(node)
+
+            matched_partners = set()
+            missed_partners = set()
+            for partner in interaction_partners:
+
+                if(combined_graph.has_node(partner["ENTITYB"])):
+
+                    signed_graph.add_node(partner["ENTITYB"], **combined_graph.nodes[partner["ENTITYB"]])  # Copy node attributes
+                    matched_partners.add(partner["ENTITYB"])
+
+                    if "up-regulates" in partner["EFFECT"] or "down-regulates" in partner["EFFECT"]:
+                        sign = (+1 if "up-regulates" in partner["EFFECT"] else -1)
+                        signed_graph.add_edge(node, partner["ENTITYB"], sign=sign)
+                    else:
+                        print("Unknown effect: ", partner["EFFECT"])
+
+                else:
+                    missed_partners.add(partner["ENTITYB"])
+                    
+            print("Node : ", node, " Matched interaction partners= ", len(matched_partners), ", Num missed: ", len(missed_partners))
+
+    except Exception as e:
+        print("Error occurred while processing partners: ", e)
+
+    print(f"Gene graph: {signed_graph.number_of_nodes()} nodes, {signed_graph.number_of_edges()} edges")
+    nx.write_graphml(signed_graph, config.GRAPHS_DIR / f"{graph_name}.graphml")
+    return signed_graph
+    
+
+
+def get_directed_graph(combined_graph: nx.Graph, graph_name: str) -> nx.Graph:
+
+    """Load a graph from a GraphML file if exists, otherwise build the graph using SIGNOR API.
+
+    Args:
+        combined_graph (nx.Graph): The input undirected graph to be converted.
+        graph_name (str): Name of the graph file (without extension).
+    Returns:
+        nx.Graph: The loaded or newly built graph.
+
+    """
+    graph_path = config.GRAPHS_DIR / f"{graph_name}.graphml"
+    if not graph_path.exists() or nx.read_graphml(graph_path).number_of_nodes() < combined_graph.number_of_nodes():
+        print(f"Graph file {graph_path} does not exist.")
+        return build_signed_directed_graph_from_signor_api(combined_graph, graph_name)
 
     graph = nx.read_graphml(graph_path)
 
@@ -160,6 +255,60 @@ def print_analysis(graph: nx.Graph) -> dict:
         print("\nLargest Component Path analysis:")
         print(f"\tDiameter of largest connected component: {analysis['lcc_diameter']}")
         print(f"\tAverage shortest path length of largest connected component: {analysis['lcc_avg_shortest_path']}")
+
+        analysis["avg_clustering"] = nx.average_clustering(graph)
+        analysis["density"] = nx.density(graph)
+        print("\nClustering and Density analysis:")
+        print(f"\tAverage clustering coefficient: {analysis['avg_clustering']}")
+        print(f"\tGraph density: {analysis['density']}\n")
+
+        analysis["betweenness_centrality"] = nx.betweenness_centrality(graph)
+        print("\nCentrality analysis:")
+        print(f"\tAverage betweenness centrality: {sum(analysis['betweenness_centrality'].values()) / len(graph)}")
+        print(f"\tMax betweenness centrality: {max(analysis['betweenness_centrality'].values())}")
+        print(f"\tMin betweenness centrality: {min(analysis['betweenness_centrality'].values())}")
+
+        analysis["closeness_centrality"] = nx.closeness_centrality(graph)
+        print(f"\tAverage closeness centrality: {sum(analysis['closeness_centrality'].values()) / len(graph)}")
+        print(f"\tMax closeness centrality: {max(analysis['closeness_centrality'].values())}")
+        print(f"\tMin closeness centrality: {min(analysis['closeness_centrality'].values())}")
+
+    else:
+        print("The graph has no nodes.")
+
+    return analysis
+
+def print_analysis(graph: nx.DiGraph) -> dict:
+    """Print and returns basic analysis of the graph.
+
+    Args:
+        graph (nx.Graph): The input graph.
+
+    Returns:
+        dict: A dictionary containing various analysis metrics.
+        
+    """
+
+    analysis = {}
+    print(f"Graph has {graph.number_of_nodes()} nodes and {graph.number_of_edges()} edges.\n")
+    degrees = [d for n, d in graph.degree()]
+    if degrees:
+        analysis["avg_degree"] = sum(degrees) / len(degrees)
+        analysis["max_degree"] = max(degrees)
+        analysis["min_degree"] = min(degrees)
+
+        print("Degree analysis:")
+        print(f"\tAverage degree: {analysis['avg_degree']:.2f}")
+        print(f"\tMax degree: {analysis['max_degree']}")
+        print(f"\tMin degree: {analysis['min_degree']}")
+
+        nx.is_strongly_connected(graph)
+        analysis["num_scc"] = nx.number_strongly_connected_components(graph)
+        analysis["largest_scc"] = max(nx.strongly_connected_components(graph), key=len)
+        print("\nConnectedness analysis:")
+        print(f"\tNumber of strongly connected components: {analysis['num_scc']}")
+        print(f"\tSize of largest strongly connected component: {len(analysis['largest_scc'])}")
+        print(f"\tIs the graph strongly connected? {nx.is_strongly_connected(graph)}")
 
         analysis["avg_clustering"] = nx.average_clustering(graph)
         analysis["density"] = nx.density(graph)

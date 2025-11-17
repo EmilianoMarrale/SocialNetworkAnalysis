@@ -1,106 +1,111 @@
-import networkx as nx
 import numpy as np
+import scipy.sparse as sp
 import pandas as pd
 
-""" 
-    Custom Module for performing Random Walk with Restart (RWR) on graphs in order to check wether fold change diffusion process yields good results.
-    This module provides functions to perform RWR on a given graph and analyze the results.
-"""
-
-
-def random_walk_with_restart(adjacency_matrix: np.ndarray, restart_probability: float = 0.2, n_iter: int = 100, fc_vector: pd.Series = pd.Series(), diffusion_weight: float = 0.5) -> pd.Series:
-    """Performs diffusion using Random Walk with Restart (RWR) on the given graph.
-
-    Args:
-        adjacency_matrix (np.ndarray): The adjacency matrix representation of the input graph to perform diffusion on.
-        restart_probability (float, optional): The probability of restarting the walk, thus concluding the current interation. Defaults to 0.2.
-        n_iter (int, optional): The number of diffusions to perform. The diffusion process ends once restart probability is met or all nodes have been visited. Defaults to 100.
-        fc_vector (pd.Series, optional): Fold-Change vector, contains for each node its fold-change value. Defaults to pd.Series().
-
-    Returns:
-        pd.Series: The vector containing the diffused fold-change values for each node.
+def rwr_diffusion(adjacency_matrix: np.ndarray, 
+                                  spreading_coeff: float = 0.2, 
+                                  n_iter: int = 100, 
+                                  fc_vector: pd.Series = None) -> pd.Series:
     """
-    for iter in range(n_iter):
-        diffusion_starting_node_index = randomize_starting_node(fc_vector)
-        fc_vector = perform_diffusion(set(), diffusion_starting_node_index, adjacency_matrix, restart_probability, fc_vector, diffusion_weight)
-    return fc_vector
-
-
-
-def perform_diffusion(visited_nodes: set, node_to_visit: int, adjacency_matrix: np.ndarray, restart_probability: float, fc_vector: pd.Series, diffusion_weight: float) -> pd.Series:
-    """Performs diffusion recursively from the given node to its neighbors until the path is exhausted or the restart probability is met.
-
-    Args:
-        visited_nodes (set): A set of nodes that have already been visited.
-        node_to_visit (int): The index of the node to visit.
-        adjacency_matrix (np.ndarray): The adjacency matrix representation of the graph.
-        restart_probability (float): The probability of restarting the walk.
-        fc_vector (pd.Series): The fold-change vector.
-        diffusion_weight (float): The weight of the diffusion process.
-
-    Returns:
-        pd.Series: The updated fold-change vector after diffusion.
+    Vectorized RWR diffusion over a graph.
     """
-    
-    print("\n-------------------------------------------------- \n")
-    # Transfer fold-change value to neighbors
-    print("Selected node to visit:", node_to_visit)
-    node_neighbors_vector = adjacency_matrix[:, node_to_visit].squeeze()
-    print("Fold change vector: ", list(fc_vector))
-    print("Selected node neighbors vector:", node_neighbors_vector)
-    diffusion_result = np.dot(fc_vector.T, np.dot(node_neighbors_vector, diffusion_weight))
-    print("Diffusion result: ", diffusion_result)
-    fc_vector[node_to_visit] += diffusion_result
-    print("Updated fold change vector: ", list(fc_vector))
-    visited_nodes.add(node_to_visit)
-    print("Updated set of Visited nodes:", visited_nodes)
+    if fc_vector is None:
+        raise ValueError("fc_vector must be provided.")
 
-    # Select the next node to visit and recursively perform diffusion
-    node_neighbors_indices = get_neighbors_indices(node_neighbors_vector)
-    print("Selected node neighbors indices:", node_neighbors_indices)
-    node_neighbors_indices = (set(node_neighbors_indices) - visited_nodes)
-    print("Unvisited neighbors indices:", node_neighbors_indices)
-    print("\n-------------------------------------------------- \n")
+    # Degree normalization: compute D^{-1}A
+    D = np.sum(adjacency_matrix, axis=1)
+    D_inv = np.diag(1.0 / np.where(D == 0, 1, D))  # avoid division by zero
+    W = D_inv @ adjacency_matrix
 
-    if len(node_neighbors_indices) == 0: # I have finished the nodes i can visit on this path.
-        print("\n-------------------------------------------------- \n")
-        print("\nNO MORE NEIGHBORS TO VISIT, ENDING DIFFUSION\n")
-        print("\n-------------------------------------------------- \n")
-        return fc_vector
-    
-    if np.random.rand() < restart_probability:
-        print("\n-------------------------------------------------- \n")
-        print("\nRESTARTING DIFFUSION\n")
-        print("\n-------------------------------------------------- \n")
-        return fc_vector
-    
-    next_node = np.random.choice(list(node_neighbors_indices))
-    return perform_diffusion(visited_nodes, next_node, adjacency_matrix, restart_probability, fc_vector, diffusion_weight)        
-    
+    # Optionally use sparse matrices for speed
+    W = sp.csr_matrix(W)
 
-def randomize_starting_node(fc_vector: pd.Series) -> int:
-    """Randomly selects a starting node with a non-zero fold-change value for the diffusion process.
+    # Convert fold-change vector to numpy
+    p0 = fc_vector.values.astype(float)
+    p = p0.copy()
 
-    Args:
-        fc_vector (pd.Series): The fold-change vector.
+    for _ in range(n_iter):
+        p_new = ((1 - spreading_coeff) * p0) + (spreading_coeff * (W @ p))
+        # Convergence check (optional)
+        if np.allclose(p_new, p, atol=1e-9):
+            print("Converged.")
+            break
+        p = p_new
 
-    Returns:
-        int: The index of the randomly selected starting node.
+    print("RWR diffusion iterations completed.")
+    return pd.Series(p, index=fc_vector.index)
+
+
+import numpy as np
+import pandas as pd
+from numpy.linalg import norm
+
+def rwr_validate(A, fc_vector, spreading_coeff, n_iter, RWR_fn,
+                 k=50, B=30, noise_std=0.05):
     """
-    fc_vector = pd.Series({idx: value for idx, value in fc_vector.items() if value != 0})
-    node_index = np.random.randint(0, len(fc_vector))
-    return node_index
-
-
-def get_neighbors_indices(node_column: np.ndarray) -> list[int]:
-    """Returns the indices of the neighboring nodes for a given node.
-
-    Args:
-        node_column (np.ndarray): The column vector representing the node's connections.
-        node_index (int): The index of the node for which to find neighbors.
-
-    Returns:
-        list[int]: A list of indices representing the neighboring nodes.
+    A: adjacency matrix
+    fc_vector: original seed fold-change vector
+    spreading_coeff: alpha
+    n_iter: iterations for RWR
+    RWR_fn: function handle to your RWR implementation
+    k: top-k for stability
+    B: bootstraps
+    noise_std: noise added to fc_vector to test robustness
     """
-    neighbors_indices = list(np.where(node_column > 0)[0])
-    return neighbors_indices
+
+    # 1. --- RUN MAIN RWR ---
+    pred = RWR_fn(adjacency_matrix=A,
+                  fc_vector=fc_vector,
+                  spreading_coeff=spreading_coeff,
+                  n_iter=n_iter)
+
+    pred = np.array(pred).flatten()
+    p = pred / pred.sum()   # normalize
+
+    # 2. --- CONVERGENCE ---  
+    # Re-run with one less iteration to estimate Δ
+    pred_prev = RWR_fn(adjacency_matrix=A,
+                       fc_vector=fc_vector,
+                       spreading_coeff=spreading_coeff,
+                       n_iter=max(n_iter - 1, 1))
+    pred_prev = np.array(pred_prev).flatten()
+    convergence = norm(pred - pred_prev, 2)
+
+    # 3. --- CONTRAST ---  
+    idx_sorted = np.argsort(pred)[::-1]
+    top = pred[idx_sorted[:k]].mean()
+    rest = pred[idx_sorted[k:]].mean()
+    contrast = top / (rest + 1e-12)
+
+    # 4. --- STABILITY UNDER BOOTSTRAP ---
+    topk_sets = []
+    for b in range(B):
+        # Add slight noise to input FCs
+        noisy_fc = fc_vector + np.random.normal(0, noise_std, size=fc_vector.shape)
+
+        pred_b = RWR_fn(adjacency_matrix=A,
+                        fc_vector=noisy_fc,
+                        spreading_coeff=spreading_coeff,
+                        n_iter=n_iter)
+
+        pred_b = np.array(pred_b).flatten()
+        idx = np.argsort(pred_b)[::-1][:k]
+        topk_sets.append(set(idx))
+
+    # pairwise Jaccard stability
+    overlaps = []
+    for i in range(B):
+        for j in range(i + 1, B):
+            s = len(topk_sets[i] & topk_sets[j]) / len(topk_sets[i] | topk_sets[j])
+            overlaps.append(s)
+
+    stability = np.mean(overlaps)
+
+    # return all metrics
+    return {
+        "convergence": convergence,
+        "contrast": contrast,
+        "stability": stability,
+        "predicted_fc": pred
+    }
+

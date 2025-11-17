@@ -1,8 +1,8 @@
 import requests
 import config.config as config
+import pandas as pd
 
-
-def get_string_interaction_partners(ids: list | str) -> str:
+def get_string_interaction_partners(ids: list | str) -> list[dict]:
     """Fetch interaction partners from STRING API.
 
     Args:
@@ -37,7 +37,7 @@ def get_string_interaction_partners(ids: list | str) -> str:
         partner_name = l[3]
         combined_score = l[5]
         interaction_partners.append({"name": partner_name, "combined_score": combined_score})
-
+    
     return interaction_partners
 
 def get_gene_set_enrichment(ids: list | str, background_ids: list | str) -> dict:
